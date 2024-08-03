@@ -6,6 +6,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <cstdlib>
+#include <map>
+#include <optional>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -33,6 +35,7 @@ private:
     GLFWwindow* window;
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 
     void initWindow() {
         glfwInit();
@@ -44,35 +47,7 @@ private:
     void initVulkan() {
         createInstance();
         setupDebugMessenger();
-    }
-
-    void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
-        createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        createInfo.messageSeverity = /*VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | */VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        createInfo.pfnUserCallback = debugCallback;
-    }
-
-    void setupDebugMessenger() {
-        if (!enableValidationLayers) return;
-
-        VkDebugUtilsMessengerCreateInfoEXT createInfo{};
-        populateDebugMessengerCreateInfo(createInfo);
-
-        if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to set up debug messenger!");
-        }
-    }
-
-    VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
-        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-        if (func != nullptr) {
-            return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-        }
-        else {
-            return VK_ERROR_EXTENSION_NOT_PRESENT;
-        }
+        pickPhysicalDevice();
     }
 
     void createInstance() {
@@ -143,12 +118,7 @@ private:
         glfwTerminate();
     }
 
-    void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
-        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-        if (func != nullptr) {
-            func(instance, debugMessenger, pAllocator);
-        }
-    }
+    // EXTENSION VALIDATION //
 
     void checkExtensionsAvailable(std::vector<const char*> const& requiredExtensions, std::vector<VkExtensionProperties> const& extensions) const {
         std::cout << "Checking if required extensions are available...\n";
@@ -164,6 +134,126 @@ private:
             if (!isThere) {
                 std::cout << "\t The extension " << requiredExtension << " cannot be found!" << '\n';
             }
+        }
+    }
+
+    std::vector<const char*> getRequiredExtensions() {
+        uint32_t glfwExtensionCount = 0;
+        const char** glfwExtensions;
+        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+        std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+
+        if (enableValidationLayers) {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        extensions.emplace_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+
+        return extensions;
+    }
+
+    // PHYSICAL DEVICE SELECTION //
+
+    void pickPhysicalDevice() {
+        uint32_t deviceCount = 0;
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+        if (deviceCount == 0) {
+            throw std::runtime_error("Failed to find GPUs with Vulkan support!");
+        }
+
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+        std::multimap<int, VkPhysicalDevice> candidates;
+
+        for (const auto& device : devices) {
+            if (isDeviceSuitable(device)) {
+                physicalDevice = device;
+                break;
+            }
+        }
+
+        if (physicalDevice == VK_NULL_HANDLE) {
+            throw std::runtime_error("failed to find a suitable GPU!");
+        }
+    }
+
+    bool isDeviceSuitable(VkPhysicalDevice device) {
+        QueueFamilyIndices indices = findQueueFamilies(device);
+
+        return indices.isComplete();
+    }
+
+    // QUEUE FAMILIES //
+
+    struct QueueFamilyIndices {
+        std::optional<uint32_t> graphicsFamily;
+
+        bool isComplete() {
+            return graphicsFamily.has_value();
+        }
+    };
+
+    QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
+        QueueFamilyIndices indices;
+
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+        
+        int i = 0;
+        for (const auto& queueFamily : queueFamilies) {
+            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                indices.graphicsFamily = i;
+            }
+            if (indices.isComplete()) {
+                break;
+            }
+            i++;
+        }
+
+        return indices;
+    }
+
+    // DEBUGGER SETUP //
+
+    void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
+        createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        createInfo.messageSeverity = /*VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | */VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        createInfo.pfnUserCallback = debugCallback;
+    }
+
+    void setupDebugMessenger() {
+        if (!enableValidationLayers) return;
+
+        VkDebugUtilsMessengerCreateInfoEXT createInfo{};
+        populateDebugMessengerCreateInfo(createInfo);
+
+        if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to set up debug messenger!");
+        }
+    }
+
+    VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
+        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+        if (func != nullptr) {
+            return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+        }
+        else {
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        }
+    }
+
+    void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
+        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (func != nullptr) {
+            func(instance, debugMessenger, pAllocator);
         }
     }
 
@@ -190,22 +280,6 @@ private:
         }
 
         return true;
-    }
-
-    std::vector<const char*> getRequiredExtensions() {
-        uint32_t glfwExtensionCount = 0;
-        const char** glfwExtensions;
-        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-        std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
-
-        if (enableValidationLayers) {
-            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        }
-
-        extensions.emplace_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-
-        return extensions;
     }
 
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
